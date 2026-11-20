@@ -12,8 +12,7 @@ import sqlite3
 import requests
 import html
 import streamlit as st
-import persist
-import cloud_database
+import pgdb
 from dotenv import load_dotenv
 load_dotenv()
 import ui_theme
@@ -78,19 +77,9 @@ def _bg_executor() -> ThreadPoolExecutor:
 
 
 def save_now():
-    """Persist changes to the configured cloud database and optional legacy backup."""
-    cloud_url = os.environ.get("SUPABASE_DB_URL", "").strip()
-    if cloud_url:
-        result = cloud_database.save_database(
-            cloud_url, "database.db", st.session_state.get("current_user", "desktop"), force=True
-        )
-        if not result.get("saved"):
-            st.session_state["cloud_db_error"] = result.get("message", "Cloud save failed")
-        else:
-            st.session_state.pop("cloud_db_error", None)
-    cfg = st.session_state.get("persist_cfg")
-    if cfg:
-        persist.maybe_save(cfg, "database.db", force=True)
+    """Kept for compatibility: every write is committed to the database immediately,
+    so there is nothing to upload any more."""
+    return None
 
 
 def start_job(name, fn, *args):
@@ -137,7 +126,7 @@ def _run_ingest(db_path, username):
         ingest_zip_pdfs_to_sqlite("Downloads.zip", db_path)
         init_db(db_path)
         log_event(db_path, username, "PDF_INGEST", "Downloads.zip")
-        return True, "PDF documents successfully indexed in SQLite!"
+        return True, "PDF documents successfully indexed in the database!"
     except Exception as e:
         return False, f"PDF ingest failed: {e}"
 
@@ -146,7 +135,34 @@ def _md_escape(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|<>~])", r"\\\1", text or "")
 
 
+EXPORT_TABLES = (
+    "government_services", "audit_logs", "web_sources", "web_pages", "library_files",
+    "library_items", "scan_items", "chat_threads", "chat_messages", "shared_links",
+)   # app_users (password hashes) is deliberately NOT exported
+
+
 def _make_backup_bytes(db_path):
+    """SQLite mode: a .db copy. Supabase mode: a ZIP of CSV files (Supabase also keeps its own backups)."""
+    if pgdb.is_postgres():
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for table in EXPORT_TABLES:
+                conn = pgdb.connect(db_path)
+                try:
+                    cur = conn.execute(f"SELECT * FROM {table}")
+                    cols = [d[0] for d in cur.description]
+                    rows = [tuple(r) for r in cur.fetchall()]
+                finally:
+                    conn.close()
+                df = pd.DataFrame(rows, columns=cols)
+                for c in cols:   # raw file bytes would make the CSV huge; keep their size only
+                    if c in ("data", "photo"):
+                        df[c] = df[c].map(lambda v: f"<{len(v)} bytes>" if v else "")
+                z.writestr(f"{table}.csv", df.to_csv(index=False))
+        return buf.getvalue()
     tmp = tempfile.mktemp(suffix=".db")
     src = sqlite3.connect(db_path)
     dst = sqlite3.connect(tmp)
@@ -183,6 +199,8 @@ _APP_USERS_SQL = """
 def _migrate_app_users(db_path: str) -> None:
     """Older databases only allowed the roles admin/analyst. Rebuild the table so ordinary 'user' accounts work.
     Existing accounts, passwords and ids are kept."""
+    if pgdb.is_postgres():
+        return          # the Supabase schema already allows the 'user' role
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
         row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_users'").fetchone()
@@ -205,12 +223,17 @@ def _migrate_app_users(db_path: str) -> None:
         conn.close()
 
 
+def _is_placeholder_password(pw: str) -> bool:
+    return (not pw) or pw in (DEFAULT_ADMIN_PASSWORD, DEFAULT_ANALYST_PASSWORD) or pw.startswith("CHANGE_THIS")
+
+
 def _seed_default_users(db_path: str) -> None:
-    """Create the two initial accounts once; existing database accounts are preserved."""
-    conn = sqlite3.connect(db_path)
+    """Create the two initial accounts once; existing database accounts are preserved.
+
+    With a shared cloud database the built-in default passwords are public, so accounts are
+    only created when ADMIN_PASSWORD / ANALYST_PASSWORD have been set to real values."""
+    conn = pgdb.connect(db_path)
     try:
-        # Create the user table here as well as in init_db(). This makes startup
-        # resilient when Streamlit Cloud is running an older db_utils.py module.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS app_users (
@@ -226,13 +249,19 @@ def _seed_default_users(db_path: str) -> None:
             """
         )
         for username, (password, role) in MOCK_USERS.items():
+            if pgdb.is_postgres() and _is_placeholder_password(password):
+                continue
             exists = conn.execute("SELECT 1 FROM app_users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
             if not exists:
                 salt = secrets.token_hex(16)
-                conn.execute(
-                    "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
-                    (username, _password_digest(password, salt), salt, role, "system"),
-                )
+                try:
+                    conn.execute(
+                        "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
+                        (username, _password_digest(password, salt), salt, role, "system"),
+                    )
+                    conn.commit()
+                except pgdb.IntegrityError:
+                    conn.rollback()     # another desktop created it at the same moment
         conn.commit()
     finally:
         conn.close()
@@ -240,7 +269,7 @@ def _seed_default_users(db_path: str) -> None:
 
 
 def verify_credentials(user: str, pwd: str) -> str | None:
-    conn = sqlite3.connect("database.db")
+    conn = pgdb.connect("database.db")
     try:
         row = conn.execute(
             "SELECT password_hash,password_salt,role FROM app_users WHERE username = ? COLLATE NOCASE AND active = 1",
@@ -284,7 +313,7 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
             st.error("Passwords do not match.")
         else:
             salt = secrets.token_hex(16)
-            conn = sqlite3.connect(db_path)
+            conn = pgdb.connect(db_path)
             try:
                 conn.execute(
                     "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
@@ -294,9 +323,9 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
                 log_event(db_path, username, "USER_CREATED", f"username={new_username}; role={new_role}")
                 save_now()
                 st.session_state["user_mgmt_flash"] = f"Account '{new_username}' ({new_role}) created. Give them the username and the temporary password."
-            except sqlite3.IntegrityError:
+            except pgdb.IntegrityError:
                 st.error("That username already exists.")
-            except sqlite3.Error as exc:
+            except pgdb.Error as exc:
                 st.error(f"Could not create the account: {exc}")
             finally:
                 conn.close()
@@ -307,11 +336,12 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
         st.success(flash)
 
     st.subheader("Registered users")
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
-        users = pd.read_sql_query(
-            "SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE", conn
+        cur = conn.execute(
+            "SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE"
         )
+        users = pd.DataFrame([tuple(r) for r in cur.fetchall()], columns=[d[0] for d in cur.description])
     finally:
         conn.close()
     shown = users.copy()
@@ -330,7 +360,7 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
             target = labels[choice]
             new_state = 0 if target.active else 1
             if st.button("🔒 Disable this account" if target.active else "🔓 Re-enable this account", key="um_toggle"):
-                conn = sqlite3.connect(db_path)
+                conn = pgdb.connect(db_path)
                 try:
                     conn.execute("UPDATE app_users SET active=? WHERE username=? COLLATE NOCASE", (new_state, target.username))
                     conn.commit()
@@ -836,42 +866,31 @@ def render_sidebar_controls(db_path, user_role):
                 poll_job("ingest", "Ingesting PDFs")
                 show_result("ingest")
 
-                st.subheader("☁️ Permanent storage")
-                pcfg = st.session_state.get("persist_cfg")
-                pst = persist.status()
-                if not pcfg:
-                    st.error(
-                        "Not configured: websites, library files and chats are LOST when the "
-                        "app restarts. Add the PERSIST_GITHUB_* secrets (see README)."
-                    )
+                st.subheader("☁️ Database")
+                if pgdb.is_postgres():
+                    st.success("Connected to the Supabase cloud database. Every change is saved immediately and shared by all users.")
                 else:
-                    if pst["last_error"]:
-                        st.warning(pst["last_error"])
-                    elif pst["last_saved"]:
-                        st.success(f"Auto-saved at {pst['last_saved']}")
-                        if pst["cloud_summary"]:
-                            st.caption(f"Cloud copy: {pst['cloud_summary']}")
-                    else:
-                        st.info(pst["restored_msg"] or "Auto-save is on.")
-                        if pst["cloud_summary"]:
-                            st.caption(f"Restored: {pst['cloud_summary']}")
-                    if st.button("☁️ Save now", key="persist_save_now"):
-                        persist.maybe_save(pcfg, db_path, force=True)
-                        st.rerun()
+                    st.warning(
+                        "Local SQLite file (database.db) - not shared and not backed up. "
+                        "Set SUPABASE_DB_URL in .env to use the cloud database."
+                    )
 
-                st.subheader("💾 Backup / Restore DB")
-                if st.button("📦 Prepare backup"):
+                st.subheader("💾 Export / Backup")
+                if st.button("📦 Prepare " + ("export (CSV ZIP)" if pgdb.is_postgres() else "backup")):
                     st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
                     log_event(db_path, username, "DB_BACKUP", "")
                 if st.session_state.get("backup_bytes"):
+                    _ext, _mime = (("zip", "application/zip") if pgdb.is_postgres() else ("db", "application/octet-stream"))
                     st.download_button(
-                        "⬇️ Download backup",
+                        "⬇️ Download " + ("export" if pgdb.is_postgres() else "backup"),
                         data=st.session_state["backup_bytes"],
-                        file_name=f"database_backup_{time.strftime('%Y%m%d_%H%M')}.db",
-                        mime="application/octet-stream",
+                        file_name=f"database_backup_{time.strftime('%Y%m%d_%H%M')}.{_ext}",
+                        mime=_mime,
                     )
 
-                up_file = st.file_uploader("Upload Backup", type=["zip", "db"])
+                up_file = None if pgdb.is_postgres() else st.file_uploader("Upload Backup", type=["zip", "db"])
+                if pgdb.is_postgres():
+                    st.caption("Restore for the cloud database is done in Supabase (Database > Backups), not from the app.")
                 if up_file is not None and st.button("🛡️ Validate & Restore"):
                     success, msg = validate_and_restore_sqlite(up_file, db_path)
                     if success:
@@ -895,18 +914,6 @@ def render_web_sources_tab(db_path, user_role, username):
     )
     is_admin = user_role == "admin"
     busy = job_running("web")
-    if os.environ.get("SUPABASE_DB_URL", "").strip():
-        cloud_state = cloud_database.status()
-        st.sidebar.caption(f"☁️ Supabase cloud DB · revision {cloud_state.get('revision') or 0}")
-        if st.session_state.get("cloud_db_error") or cloud_state.get("last_error"):
-            st.sidebar.warning(st.session_state.get("cloud_db_error") or cloud_state.get("last_error"))
-
-    if is_admin and not st.session_state.get("persist_cfg"):
-        st.warning(
-            "⚠️ Permanent storage is not set up, so anything added here disappears when the "
-            "app restarts. Open the sidebar > Session & System Admin > ☁️ Permanent storage."
-        )
-
     if is_admin:
         with st.form("add_web_form", clear_on_submit=True):
             new_url = st.text_input(
@@ -997,11 +1004,6 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
     )
     is_admin = user_role == "admin"
     busy = job_running("lib")
-    if is_admin and not st.session_state.get("persist_cfg"):
-        st.warning(
-            "⚠️ Permanent storage is not set up, so anything added here disappears when the "
-            "app restarts. Open the sidebar > Session & System Admin > ☁️ Permanent storage."
-        )
     vision_model = st.session_state.get("vision_model") or llm_cfg["vision_model"]
 
     if is_admin:
@@ -1160,24 +1162,18 @@ def main():
     )
     ui_theme.inject_modern_css()
     db_path = "database.db"
-    cloud_url = os.environ.get("SUPABASE_DB_URL", "").strip()
-    cloud_startup = cloud_database.restore_if_available(cloud_url, db_path)
-    if cloud_startup.get("error"):
-        st.session_state["cloud_db_error"] = cloud_startup["message"]
-    persist_cfg = persist.get_config(_read_secrets(persist.SECRET_KEYS))
-    if not cloud_url:
-        persist.restore_if_needed(persist_cfg, db_path)   # legacy GitHub backup when Supabase is not configured
-    init_db(db_path)
-    _seed_default_users(db_path)
-    init_chat_tables(db_path)
-    if cloud_url and cloud_startup.get("configured") and not cloud_startup.get("error"):
-        # Initialize a brand-new cloud project from the existing local database.
-        if not cloud_startup.get("restored") and cloud_database.status().get("revision") == 0:
-            seed_result = cloud_database.save_database(cloud_url, db_path, "initial-migration", force=True)
-            if not seed_result.get("saved"):
-                st.session_state["cloud_db_error"] = seed_result.get("message", "Initial cloud save failed")
-    persist.maybe_save(persist_cfg, db_path)           # legacy optional backup
-    st.session_state["persist_cfg"] = persist_cfg
+    try:
+        init_db(db_path)
+        _seed_default_users(db_path)
+        init_chat_tables(db_path)
+    except (pgdb.Error, RuntimeError) as exc:
+        st.error(f"Cannot reach the database: {exc}")
+        st.info("Check SUPABASE_DB_URL in .env (Supabase > Project Settings > Database > Connection string) and your internet connection.")
+        return
+    if pgdb.is_postgres():
+        st.sidebar.caption("☁️ Supabase cloud database")
+    else:
+        st.sidebar.caption("💾 Local SQLite database (not shared)")
 
     # Read-only public share link view (bypasses login for shared snapshots)
     share_token = st.query_params.get("share")
@@ -1286,11 +1282,7 @@ def main():
                         st.error("Only a single read-only SELECT statement is allowed.")
                     else:
                         try:
-                            conn = sqlite3.connect(db_path)
-                            try:
-                                result_df = pd.read_sql_query(sql, conn)
-                            finally:
-                                conn.close()
+                            result_df = pgdb.read_df(db_path, sql, scope="workbench")
                             log_event(db_path, username, "WORKBENCH_QUERY", sql[:500])
                             st.dataframe(result_df, width="stretch")
                         except Exception as e:
@@ -1303,10 +1295,6 @@ def main():
             render_mobile_phone_monitor(db_path, username)
         with tabs["pcmetrics"]:
             render_pc_system_monitor()
-
-    # Catch writes performed by legacy modules that do not call save_now().
-    if cloud_url:
-        cloud_database.save_database(cloud_url, db_path, username)
 
 
 if __name__ == "__main__":

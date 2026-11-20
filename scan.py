@@ -8,7 +8,7 @@ No Streamlit calls here, so it can run in a background thread.
 import io
 import json
 import re
-import sqlite3
+import pgdb
 
 import llm
 from db_utils import log_event
@@ -17,7 +17,7 @@ MAX_PHOTO_BYTES = 8 * 1024 * 1024
 
 
 def init_tables(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS scan_items (
@@ -88,7 +88,7 @@ def add_item(db_path, name, keywords, info, link, photo, username):
         link = _clean_link(link)
         blob = _photo_blob(photo)
         init_tables(db_path)
-        conn = sqlite3.connect(db_path)
+        conn = pgdb.connect(db_path)
         try:
             conn.execute(
                 "INSERT INTO scan_items (name, keywords, info, link, photo, added_by) VALUES (?,?,?,?,?,?);",
@@ -109,7 +109,7 @@ def update_item(db_path, item_id, name, keywords, info, link, username):
     try:
         name, info = _validate(name, info)
         link = _clean_link(link)
-        conn = sqlite3.connect(db_path)
+        conn = pgdb.connect(db_path)
         try:
             conn.execute(
                 "UPDATE scan_items SET name=?, keywords=?, info=?, link=? WHERE id=?;",
@@ -127,7 +127,7 @@ def update_item(db_path, item_id, name, keywords, info, link, username):
 
 
 def delete_item(db_path, item_id, username):
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute("DELETE FROM scan_items WHERE id=?;", (int(item_id),))
         conn.commit()
@@ -138,8 +138,8 @@ def delete_item(db_path, item_id, username):
 
 def list_items(db_path, with_photo=False):
     init_tables(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = pgdb.connect(db_path)
+    conn.row_factory = pgdb.Row
     try:
         cols = "id, name, keywords, info, link, added_by, added_at" + (", photo" if with_photo else ", (photo IS NOT NULL) AS has_photo")
         return [dict(r) for r in conn.execute(f"SELECT {cols} FROM scan_items ORDER BY name COLLATE NOCASE;")]
@@ -148,7 +148,7 @@ def list_items(db_path, with_photo=False):
 
 
 def get_photo(db_path, item_id):
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute("SELECT photo FROM scan_items WHERE id=?;", (int(item_id),)).fetchone()
         return row[0] if row else None

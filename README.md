@@ -1,17 +1,15 @@
 # Windows Desktop + Supabase Cloud Build
 
-This source package now includes a Windows desktop wrapper and a Supabase PostgreSQL cloud-persistence compatibility bridge. Start with **[DESKTOP_CLOUD_MIGRATION.md](DESKTOP_CLOUD_MIGRATION.md)**, configure `.env` from `.env.example`, run `supabase/001_platform_snapshots.sql` in Supabase, then run `build_windows.bat` on Windows.
-
-**Current limitation:** the bridge stores versioned SQLite snapshots in PostgreSQL with optimistic conflict detection. It is not yet a normalized concurrent multi-user PostgreSQL migration; only one active desktop writer should use the same cloud snapshot at a time. See the migration guide before production deployment.
+This package is a **Windows desktop app** (Streamlit in a WebView window) backed by a **Supabase PostgreSQL cloud database** with real tables, shared by all users at the same time. Start with **[DESKTOP_CLOUD_MIGRATION.md](DESKTOP_CLOUD_MIGRATION.md)**.
 
 ---
 
 # Enterprise-Grade Local AI & Document Reporting Platform
 
-A multi-user, RBAC-protected local AI platform built with Streamlit, SQLite, Ollama, and PyPDF.
+A multi-user, RBAC-protected AI platform built with Streamlit, Supabase PostgreSQL, and PyPDF.
 
 ## Features
-- **Government Services & Document Search:** Automatic extraction and searching of ingested PDF documents alongside SQLite tables.
+- **Government Services & Document Search:** Automatic extraction and searching of ingested PDF documents alongside database tables.
 - **Interactive AI Assistant:** Natural language SQL query generation and PDF context-aware document Q&A via Ollama.
 - **Audit Logging & Security:** Detailed audit logs, inactivity timeouts, sidebar live countdown timer, and client-side activity tracking.
 - **Database Restoration & Validation:** Backup restoration with pre-check validation (`PRAGMA integrity_check` & schema verification).
@@ -92,23 +90,11 @@ Groq, OpenRouter, Gemini, OpenAI...), `anthropic` (Claude API). Running locally 
 - The chat answers from the best-matching part of each page. Ask with the words the document uses
   (for example *"Trincomalee computer science 2022/2023"*).
 
-## Permanent storage (fixes "websites / library files disappear")
-Streamlit Cloud wipes the app's disk on every restart, sleep or redeploy, so anything added at
-runtime is lost. The app now **auto-saves the database to a private GitHub data repo and restores it on startup**.
-
-One-time setup:
-1. Create a **private** GitHub repository only for data (e.g. `gov-ai-data`) with a README.
-2. GitHub > Settings > Developer settings > *Fine-grained personal access tokens* > create a token for
-   **only that repo** with **Contents: Read and write**.
-3. In Streamlit: *Manage app > Settings > Secrets*, add:
-   ```toml
-   PERSIST_GITHUB_TOKEN = "github_pat_..."
-   PERSIST_GITHUB_REPO  = "your-name/gov-ai-data"
-   ```
-4. Reboot the app. Sidebar > *Session & System Admin* > **Permanent storage** shows "Auto-saved at ...".
-
-Notes: saving happens a few seconds after any change (use **Save now** to force it). Use a separate data repo,
-never the app repo, or every save would redeploy the app. Keep the repo private: it holds your data.
+## Cloud database (Supabase PostgreSQL)
+All data (chats, websites, library files and pictures, scan catalogue, users, audit log) lives in Supabase
+tables. Every change is committed immediately, so nothing is lost when the app restarts and several people
+can work at once. Without `SUPABASE_DB_URL` the app falls back to a local `database.db` (development only).
+Setup and the one-time import of an old `database.db`: see **DESKTOP_CLOUD_MIGRATION.md**.
 
 ## Talking avatar (🔊 Listen)
 When you press **🔊 Listen** under an AI answer, a picture panel (`static/avatar.jpg`) pops up in the
@@ -154,7 +140,7 @@ It is turned into glowing particles and appears under the **My Models** tab; use
 * Files: `scan.py` (database + AI), `scan_ui.py` (tab), `holomotion_tab.py` (viewer bridge).
 
 ## User Management and Screen Monitor
-- The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets or the documented development defaults.
+- The initial `admin` and `analyst` accounts are created on first launch from the `ADMIN_PASSWORD` / `ANALYST_PASSWORD` settings. With the cloud database the built-in development defaults are refused.
 - Both Admin and Analyst roles can open **👥 User Management** and create additional Admin or Analyst accounts. New passwords are stored as salted PBKDF2-SHA256 hashes, not plaintext.
 - Both roles have a **🖥️ Screen Monitor** button in the sidebar and a Screen Monitor tab. Screen capture starts only after the signed-in user clicks Start and approves the browser's screen/window selection prompt. The preview stays in that browser and is not sent to the server. Use Chrome or Edge on HTTPS or localhost.
 

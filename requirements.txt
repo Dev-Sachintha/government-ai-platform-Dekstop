@@ -12,4 +12,5 @@ fpdf2
 duckduckgo-search
 python-dotenv>=1.0.1
 psycopg[binary]>=3.2.3
+psycopg_pool>=3.2.2
 pywebview>=5.3

@@ -1,12 +1,15 @@
 import re
-import sqlite3
+import pgdb
 
 REQUIRED_TABLES = ["government_services", "audit_logs"]
 
 
 def init_db(db_path: str) -> None:
     """Create all tables the platform needs (safe to call repeatedly)."""
-    conn = sqlite3.connect(db_path)
+    if pgdb.is_postgres():          # Supabase: schema is applied once per process by pgdb
+        pgdb.ensure_schema()
+        return
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             """
@@ -110,7 +113,7 @@ def log_event(db_path: str, username: str, action: str, details: str = "") -> No
     """Write an audit log entry. Never raises (auditing must not break the app)."""
     try:
         init_db(db_path)
-        conn = sqlite3.connect(db_path)
+        conn = pgdb.connect(db_path)
         try:
             conn.execute(
                 "INSERT INTO audit_logs (username, action, details) VALUES (?, ?, ?);",
@@ -124,7 +127,9 @@ def log_event(db_path: str, username: str, action: str, details: str = "") -> No
 
 
 _FORBIDDEN = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|pragma|vacuum|reindex)\b",
+    r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|pragma|vacuum|reindex|"
+    r"copy|grant|revoke|truncate|execute|call|reset|lock|into|"
+    r"pg_\w+|lo_\w+|dblink\w*|set_config|current_setting)\b",
     re.IGNORECASE,
 )
 

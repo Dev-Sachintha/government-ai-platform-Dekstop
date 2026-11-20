@@ -13,7 +13,7 @@ import hashlib
 import io
 import os
 import re
-import sqlite3
+import pgdb
 
 import llm
 from PIL import Image, ImageOps
@@ -114,7 +114,7 @@ def add_files(db_path: str, uploads: list[tuple[str, bytes]], description: str, 
                 continue
 
             digest = hashlib.sha256(raw).hexdigest()
-            conn = sqlite3.connect(db_path)
+            conn = pgdb.connect(db_path)
             try:
                 if conn.execute("SELECT 1 FROM library_files WHERE sha256 = ?;", (digest,)).fetchone():
                     messages.append((False, f"{name}: already in the library."))
@@ -141,7 +141,7 @@ def add_files(db_path: str, uploads: list[tuple[str, bytes]], description: str, 
                 kind = "image"
                 items = [(1, "", "image/jpeg", jpeg)]
 
-            conn = sqlite3.connect(db_path)
+            conn = pgdb.connect(db_path)
             try:
                 cur = conn.cursor()
                 cur.execute(
@@ -210,7 +210,7 @@ def describe_items(db_path, item_ids, llm_cfg, vision_model, username) -> tuple[
                 if not text:
                     failed += 1
                     continue
-                conn = sqlite3.connect(db_path)
+                conn = pgdb.connect(db_path)
                 try:
                     conn.execute("UPDATE library_items SET ai_text = ? WHERE id = ?;", (text, item_id))
                     conn.commit()
@@ -252,9 +252,9 @@ def process_uploads(db_path, uploads, description, username, auto_describe, llm_
 # ----------------------------------------------------------------- queries
 def list_files(db_path: str) -> list[dict]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = pgdb.Row
         rows = conn.execute(
             f"""
             SELECT f.id, f.filename, f.title, f.description, f.kind, f.page_count,
@@ -272,7 +272,7 @@ def list_files(db_path: str) -> list[dict]:
 
 def pending_description_ids(db_path, file_id, ids=None, limit=MAX_AI_ITEMS_PER_RUN) -> list[int]:
     """Items that have a picture but no searchable text yet (images, scanned pages)."""
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         sql = (
             "SELECT i.id FROM library_items i WHERE i.data IS NOT NULL "
@@ -293,7 +293,7 @@ def pending_description_ids(db_path, file_id, ids=None, limit=MAX_AI_ITEMS_PER_R
 
 
 def get_item_image(db_path: str, item_id: int) -> bytes | None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute("SELECT data FROM library_items WHERE id = ?;", (item_id,)).fetchone()
         return bytes(row[0]) if row and row[0] else None
@@ -302,7 +302,7 @@ def get_item_image(db_path: str, item_id: int) -> bytes | None:
 
 
 def get_item_id(db_path: str, file_id: int, page_number: int) -> int | None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute(
             "SELECT id FROM library_items WHERE file_id = ? AND page_number = ?;",
@@ -314,7 +314,7 @@ def get_item_id(db_path: str, file_id: int, page_number: int) -> int | None:
 
 
 def update_file(db_path, file_id, title, description, username) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             "UPDATE library_files SET title = ?, description = ? WHERE id = ?;",
@@ -327,7 +327,7 @@ def update_file(db_path, file_id, title, description, username) -> None:
 
 
 def delete_file(db_path, file_id, username) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute("SELECT filename FROM library_files WHERE id = ?;", (file_id,)).fetchone()
         conn.execute("DELETE FROM library_items WHERE file_id = ?;", (file_id,))
@@ -347,9 +347,9 @@ def search_items(db_path: str, keywords: list[str], limit: int = 20) -> list[dic
         ["f.title LIKE ? OR f.description LIKE ? OR i.text_content LIKE ? OR i.ai_text LIKE ?"] * len(keywords)
     )
     params = [f"%{kw}%" for kw in keywords for _ in range(4)]
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = pgdb.Row
         try:
             rows = conn.execute(
                 f"""
@@ -360,7 +360,7 @@ def search_items(db_path: str, keywords: list[str], limit: int = 20) -> list[dic
                 """,
                 params,
             ).fetchall()
-        except sqlite3.Error:
+        except pgdb.Error:
             return []
     finally:
         conn.close()
@@ -385,9 +385,9 @@ def search_items(db_path: str, keywords: list[str], limit: int = 20) -> list[dic
 
 def latest_images(db_path: str, n: int = 3) -> list[dict]:
     """Most recently added pictures (used for 'show me an image' with no keywords)."""
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = pgdb.Row
         rows = conn.execute(
             """
             SELECT i.id, f.title, f.filename, f.kind, i.page_number AS page,
@@ -398,7 +398,7 @@ def latest_images(db_path: str, n: int = 3) -> list[dict]:
             (n,),
         ).fetchall()
         return [dict(r, score=0, head=0, body=0) for r in rows]
-    except sqlite3.Error:
+    except pgdb.Error:
         return []
     finally:
         conn.close()

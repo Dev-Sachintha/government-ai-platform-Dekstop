@@ -1,14 +1,16 @@
 """Explicit imports so PyInstaller discovers modules loaded by Streamlit's script runner."""
 import avatar_js  # noqa: F401
 import chat_app  # noqa: F401
-import cloud_database  # noqa: F401
 import db_utils  # noqa: F401
 import holomotion_tab  # noqa: F401
 import library  # noqa: F401
 import llm  # noqa: F401
 import math_links  # noqa: F401
 import pdf_ingest  # noqa: F401
-import persist  # noqa: F401
+import pg_schema  # noqa: F401
+import pgdb  # noqa: F401
+import psycopg  # noqa: F401
+import psycopg_pool  # noqa: F401
 import scan  # noqa: F401
 import scan_ui  # noqa: F401
 import ui_theme  # noqa: F401

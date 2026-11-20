@@ -7,7 +7,7 @@ import io
 import ipaddress
 import re
 import socket
-import sqlite3
+import pgdb
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
@@ -222,7 +222,7 @@ def add_or_refresh_source(db_path: str, url: str, username: str) -> tuple[bool, 
         title, text = fetch_url(norm)
         chunks = chunk_text(text)
         init_db(db_path)
-        conn = sqlite3.connect(db_path)
+        conn = pgdb.connect(db_path)
         try:
             cur = conn.cursor()
             row = cur.execute("SELECT id FROM web_sources WHERE url = ?;", (norm,)).fetchone()
@@ -263,9 +263,9 @@ def add_or_refresh_source(db_path: str, url: str, username: str) -> tuple[bool, 
 
 def list_sources(db_path: str) -> list[dict]:
     init_db(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = pgdb.Row
         rows = conn.execute(
             "SELECT id, url, title, added_by, added_at, last_fetched, chunk_count, status "
             "FROM web_sources ORDER BY id DESC;"
@@ -276,7 +276,7 @@ def list_sources(db_path: str) -> list[dict]:
 
 
 def delete_source(db_path: str, source_id: int, username: str) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute("SELECT url FROM web_sources WHERE id = ?;", (source_id,)).fetchone()
         conn.execute("DELETE FROM web_pages WHERE source_id = ?;", (source_id,))

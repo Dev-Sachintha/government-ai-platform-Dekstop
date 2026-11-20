@@ -2,7 +2,7 @@ import io
 import os
 import json
 import re
-import sqlite3
+import pgdb
 import time
 import unicodedata
 import uuid
@@ -70,6 +70,7 @@ PICTURE_WORDS = re.compile(
     re.IGNORECASE,
 )
 INTERNAL_TABLES = (
+    "app_users",
     "audit_logs",
     "library_items",
     "library_files",
@@ -79,6 +80,7 @@ INTERNAL_TABLES = (
     "chat_messages",
     "shared_links",
 )
+DB_DIALECT = "PostgreSQL (use ILIKE for case-insensitive text search)" if pgdb.is_postgres() else "SQLite"
 HIDDEN_FROM_SQL_SCHEMA = set(INTERNAL_TABLES) | {"government_services"}
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
 MAX_IMAGES = 3
@@ -87,10 +89,10 @@ PERSONAS = {
     "🏛️ Sri Lankan Gov & Data Analyst (Default)": (
         "You are an expert AI assistant specializing in Sri Lankan Government Services, "
         "policy circulars, and database reporting. Answer accurately using provided excerpts, "
-        "web citations, and SQLite data."
+        "web citations, and database data."
     ),
     "🗄️ SQL & Database Architect": (
-        "You are a senior SQLite and data engineering expert. Write clean, optimized read-only "
+        "You are a senior SQL and data engineering expert. Write clean, optimized read-only "
         "SELECT queries, explain schemas clearly, and format tabular insights."
     ),
     "✍️ Executive Copywriter & Policy Drafter": (
@@ -121,7 +123,7 @@ TONE_TEMPS = {
 
 # ------------------------------------------------------------------ SQLite Thread Storage
 def init_chat_tables(db_path: str):
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS chat_threads (
@@ -158,7 +160,7 @@ def init_chat_tables(db_path: str):
 def _create_thread(db_path: str, username: str, title: str = "New Conversation") -> str:
     tid = str(uuid.uuid4())
     now = time.time()
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             "INSERT INTO chat_threads (id, username, title, pinned, updated_at) VALUES (?, ?, ?, 0, ?)",
@@ -179,7 +181,7 @@ def _create_thread(db_path: str, username: str, title: str = "New Conversation")
 
 
 def _list_threads(db_path: str, username: str, search: str = "") -> list[dict]:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         if search.strip():
             q = f"%{search.strip()}%"
@@ -207,7 +209,7 @@ def _list_threads(db_path: str, username: str, search: str = "") -> list[dict]:
 
 
 def _load_messages(db_path: str, thread_id: str) -> list[dict]:
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         rows = conn.execute(
             "SELECT id, role, content, sql_query, citations_json FROM chat_messages WHERE thread_id = ? ORDER BY id ASC",
@@ -219,7 +221,7 @@ def _load_messages(db_path: str, thread_id: str) -> list[dict]:
             sql_q = r[3] or ""
             if sql_q and is_safe_select(sql_q) and not INTERNAL_SQL.search(sql_q):
                 try:
-                    df = pd.read_sql_query(sql_q, conn)
+                    df = pgdb.read_df(db_path, sql_q, scope="chat")
                 except Exception:
                     df = None
             msgs.append(
@@ -248,7 +250,7 @@ def _save_message(
     auto_title: str | None = None,
 ):
     now = time.time()
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             "INSERT INTO chat_messages (thread_id, role, content, sql_query, citations_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -279,7 +281,7 @@ def _truncate_thread_from(
     db_path: str, thread_id: str, message_id: int, inclusive: bool = True
 ):
     op = ">=" if inclusive else ">"
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         conn.execute(
             f"DELETE FROM chat_messages WHERE thread_id = ? AND id {op} ?",
@@ -335,7 +337,7 @@ def render_sidebar_threads(db_path: str, username: str):
                     key=f"pin_{t['id']}",
                     use_container_width=True,
                 ):
-                    conn = sqlite3.connect(db_path)
+                    conn = pgdb.connect(db_path)
                     conn.execute(
                         "UPDATE chat_threads SET pinned = ? WHERE id = ?",
                         (0 if t["pinned"] else 1, t["id"]),
@@ -350,7 +352,7 @@ def render_sidebar_threads(db_path: str, username: str):
                     "💾 Save Name", key=f"ren_btn_{t['id']}", use_container_width=True
                 ):
                     if new_name.strip():
-                        conn = sqlite3.connect(db_path)
+                        conn = pgdb.connect(db_path)
                         conn.execute(
                             "UPDATE chat_threads SET title = ? WHERE id = ?",
                             (new_name.strip()[:60], t["id"]),
@@ -361,7 +363,7 @@ def render_sidebar_threads(db_path: str, username: str):
                 if st.button(
                     "🗑️ Delete", key=f"del_{t['id']}", use_container_width=True
                 ):
-                    conn = sqlite3.connect(db_path)
+                    conn = pgdb.connect(db_path)
                     conn.execute(
                         "DELETE FROM chat_messages WHERE thread_id = ?", (t["id"],)
                     )
@@ -460,7 +462,7 @@ def _search_local_documents(
     db_path: str, keywords: list[str], library_items: list[dict], shown_ids: set
 ) -> str:
     candidates = []
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         if keywords:
             params = [f"%{kw}%" for kw in keywords]
@@ -472,7 +474,7 @@ def _search_local_documents(
                     params,
                 ):
                     candidates.append((f"", content, None))
-            except sqlite3.Error:
+            except pgdb.Error:
                 pass
             try:
                 for title, url, content in conn.execute(
@@ -482,7 +484,7 @@ def _search_local_documents(
                     candidates.append(
                         (f"[Website: {title or url} - {url}]", content, None)
                     )
-            except sqlite3.Error:
+            except pgdb.Error:
                 pass
 
         for h in library_items or []:
@@ -515,21 +517,15 @@ def _search_local_documents(
 
 
 def _get_schema(db_path: str) -> str:
-    conn = sqlite3.connect(db_path)
-    try:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-        ).fetchall()
-        lines = []
-        for (t_name,) in tables:
-            if t_name in HIDDEN_FROM_SQL_SCHEMA:
-                continue
-            lines.append(f"Table: {t_name}")
-            for c in conn.execute(f'PRAGMA table_info("{t_name}");').fetchall():
-                lines.append(f"  - {c[1]} ({c[2]})")
-        return "\n".join(lines)
-    finally:
-        conn.close()
+    lines, current = [], None
+    for table, column, ctype in pgdb.table_columns(
+        db_path, hidden_tables=HIDDEN_FROM_SQL_SCHEMA, hidden_columns={("scan_items", "photo")}
+    ):
+        if table != current:
+            lines.append(f"Table: {table}")
+            current = table
+        lines.append(f"  - {column} ({ctype})")
+    return "\n".join(lines)
 
 
 def _live_web_search(query: str, max_results: int = 4) -> list[dict]:
@@ -642,7 +638,7 @@ def _render_stt_bar(disabled: bool):
 # ------------------------------------------------------------------ Public Share View
 def render_shared_thread_view(db_path: str, token: str):
     st.title("🔗 Shared AI Conversation")
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     try:
         row = conn.execute(
             "SELECT title, snapshot_json, created_by, created_at FROM shared_links WHERE token = ?",
@@ -791,7 +787,7 @@ def render_ai_chat_interface(
 
     # Export & Public Share Bar
     messages = _load_messages(db_path, active_tid)
-    conn = sqlite3.connect(db_path)
+    conn = pgdb.connect(db_path)
     t_row = conn.execute(
         "SELECT title FROM chat_threads WHERE id = ?", (active_tid,)
     ).fetchone()
@@ -836,7 +832,7 @@ def render_ai_chat_interface(
                     }
                     for m in messages
                 ]
-                conn = sqlite3.connect(db_path)
+                conn = pgdb.connect(db_path)
                 conn.execute(
                     "INSERT INTO shared_links (token, thread_id, title, snapshot_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (
@@ -1046,8 +1042,8 @@ def render_ai_chat_interface(
                 f"Local Government & Library Excerpts:\n{local_context or 'None'}\n\n"
                 f"Attached File Contents:\n{attachment_context or 'None'}\n\n"
                 f"Live Web Search Results:\n{web_context or 'None'}\n\n"
-                f"SQLite Database Schema:\n{db_schema or 'None'}\n"
-                "If the user asks for database records/counts from the SQLite schema, include a valid read-only "
+                f"{DB_DIALECT} Database Schema:\n{db_schema or 'None'}\n"
+                f"If the user asks for database records/counts from the {DB_DIALECT} schema, include a valid read-only "
                 "SELECT query inside a ```sql code block."
             )
 
