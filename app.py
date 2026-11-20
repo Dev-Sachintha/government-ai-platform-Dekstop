@@ -14,6 +14,7 @@ import html
 import streamlit as st
 import pgdb
 from dotenv import load_dotenv
+
 load_dotenv()
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
@@ -136,9 +137,17 @@ def _md_escape(text: str) -> str:
 
 
 EXPORT_TABLES = (
-    "government_services", "audit_logs", "web_sources", "web_pages", "library_files",
-    "library_items", "scan_items", "chat_threads", "chat_messages", "shared_links",
-)   # app_users (password hashes) is deliberately NOT exported
+    "government_services",
+    "audit_logs",
+    "web_sources",
+    "web_pages",
+    "library_files",
+    "library_items",
+    "scan_items",
+    "chat_threads",
+    "chat_messages",
+    "shared_links",
+)  # app_users (password hashes) is deliberately NOT exported
 
 
 def _make_backup_bytes(db_path):
@@ -158,7 +167,11 @@ def _make_backup_bytes(db_path):
                 finally:
                     conn.close()
                 df = pd.DataFrame(rows, columns=cols)
-                for c in cols:   # raw file bytes would make the CSV huge; keep their size only
+                for (
+                    c
+                ) in (
+                    cols
+                ):  # raw file bytes would make the CSV huge; keep their size only
                     if c in ("data", "photo"):
                         df[c] = df[c].map(lambda v: f"<{len(v)} bytes>" if v else "")
                 z.writestr(f"{table}.csv", df.to_csv(index=False))
@@ -179,7 +192,9 @@ def _make_backup_bytes(db_path):
 
 
 def _password_digest(password: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000).hex()
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000
+    ).hex()
 
 
 _APP_USERS_SQL = """
@@ -200,10 +215,12 @@ def _migrate_app_users(db_path: str) -> None:
     """Older databases only allowed the roles admin/analyst. Rebuild the table so ordinary 'user' accounts work.
     Existing accounts, passwords and ids are kept."""
     if pgdb.is_postgres():
-        return          # the Supabase schema already allows the 'user' role
+        return  # the Supabase schema already allows the 'user' role
     conn = sqlite3.connect(db_path, isolation_level=None)
     try:
-        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_users'").fetchone()
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='app_users'"
+        ).fetchone()
         if not row or "'user'" in (row[0] or ""):
             return
         conn.execute("BEGIN")
@@ -224,7 +241,11 @@ def _migrate_app_users(db_path: str) -> None:
 
 
 def _is_placeholder_password(pw: str) -> bool:
-    return (not pw) or pw in (DEFAULT_ADMIN_PASSWORD, DEFAULT_ANALYST_PASSWORD) or pw.startswith("CHANGE_THIS")
+    return (
+        (not pw)
+        or pw in (DEFAULT_ADMIN_PASSWORD, DEFAULT_ANALYST_PASSWORD)
+        or pw.startswith("CHANGE_THIS")
+    )
 
 
 def _seed_default_users(db_path: str) -> None:
@@ -234,8 +255,7 @@ def _seed_default_users(db_path: str) -> None:
     only created when ADMIN_PASSWORD / ANALYST_PASSWORD have been set to real values."""
     conn = pgdb.connect(db_path)
     try:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS app_users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -246,22 +266,29 @@ def _seed_default_users(db_path: str) -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 active INTEGER NOT NULL DEFAULT 1
             )
-            """
-        )
+            """)
         for username, (password, role) in MOCK_USERS.items():
             if pgdb.is_postgres() and _is_placeholder_password(password):
                 continue
-            exists = conn.execute("SELECT 1 FROM app_users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+            exists = conn.execute(
+                "SELECT 1 FROM app_users WHERE username = ? COLLATE NOCASE", (username,)
+            ).fetchone()
             if not exists:
                 salt = secrets.token_hex(16)
                 try:
                     conn.execute(
                         "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
-                        (username, _password_digest(password, salt), salt, role, "system"),
+                        (
+                            username,
+                            _password_digest(password, salt),
+                            salt,
+                            role,
+                            "system",
+                        ),
                     )
                     conn.commit()
                 except pgdb.IntegrityError:
-                    conn.rollback()     # another desktop created it at the same moment
+                    conn.rollback()  # another desktop created it at the same moment
         conn.commit()
     finally:
         conn.close()
@@ -296,7 +323,9 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
         new_password = st.text_input("Temporary password", type="password")
         confirm_password = st.text_input("Confirm password", type="password")
         new_role = st.selectbox(
-            "Account role", creatable, index=0,
+            "Account role",
+            creatable,
+            index=0,
             help="user = AI Workspace & Chat, Scan, HoloMotion 3D only. analyst = most tabs. admin = everything.",
         )
         submitted = st.form_submit_button("➕ Create account", type="primary")
@@ -306,7 +335,9 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
         elif new_role not in creatable:
             st.error("You are not allowed to create that kind of account.")
         elif not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
-            st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
+            st.error(
+                "Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen."
+            )
         elif len(new_password) < 10:
             st.error("Password must contain at least 10 characters.")
         elif new_password != confirm_password:
@@ -317,12 +348,25 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
             try:
                 conn.execute(
                     "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
-                    (new_username, _password_digest(new_password, salt), salt, new_role, username),
+                    (
+                        new_username,
+                        _password_digest(new_password, salt),
+                        salt,
+                        new_role,
+                        username,
+                    ),
                 )
                 conn.commit()
-                log_event(db_path, username, "USER_CREATED", f"username={new_username}; role={new_role}")
+                log_event(
+                    db_path,
+                    username,
+                    "USER_CREATED",
+                    f"username={new_username}; role={new_role}",
+                )
                 save_now()
-                st.session_state["user_mgmt_flash"] = f"Account '{new_username}' ({new_role}) created. Give them the username and the temporary password."
+                st.session_state["user_mgmt_flash"] = (
+                    f"Account '{new_username}' ({new_role}) created. Give them the username and the temporary password."
+                )
             except pgdb.IntegrityError:
                 st.error("That username already exists.")
             except pgdb.Error as exc:
@@ -341,7 +385,9 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
         cur = conn.execute(
             "SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE"
         )
-        users = pd.DataFrame([tuple(r) for r in cur.fetchall()], columns=[d[0] for d in cur.description])
+        users = pd.DataFrame(
+            [tuple(r) for r in cur.fetchall()], columns=[d[0] for d in cur.description]
+        )
     finally:
         conn.close()
     shown = users.copy()
@@ -350,30 +396,52 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
 
     # Enable / disable an account (a disabled account cannot log in). Admin: anyone; Analyst: ordinary users only.
     manageable = [
-        r for r in users.itertuples()
-        if r.username.lower() != username.lower() and (role == "admin" or r.role == "user")
+        r
+        for r in users.itertuples()
+        if r.username.lower() != username.lower()
+        and (role == "admin" or r.role == "user")
     ]
     if manageable:
         with st.expander("Disable or re-enable an account"):
-            labels = {f"{r.username} ({r.role}, {'active' if r.active else 'disabled'})": r for r in manageable}
+            labels = {
+                f"{r.username} ({r.role}, {'active' if r.active else 'disabled'})": r
+                for r in manageable
+            }
             choice = st.selectbox("Account", list(labels.keys()), key="um_pick")
             target = labels[choice]
             new_state = 0 if target.active else 1
-            if st.button("🔒 Disable this account" if target.active else "🔓 Re-enable this account", key="um_toggle"):
+            if st.button(
+                (
+                    "🔒 Disable this account"
+                    if target.active
+                    else "🔓 Re-enable this account"
+                ),
+                key="um_toggle",
+            ):
                 conn = pgdb.connect(db_path)
                 try:
-                    conn.execute("UPDATE app_users SET active=? WHERE username=? COLLATE NOCASE", (new_state, target.username))
+                    conn.execute(
+                        "UPDATE app_users SET active=? WHERE username=? COLLATE NOCASE",
+                        (new_state, target.username),
+                    )
                     conn.commit()
                 finally:
                     conn.close()
-                log_event(db_path, username, "USER_ENABLED" if new_state else "USER_DISABLED", f"username={target.username}")
+                log_event(
+                    db_path,
+                    username,
+                    "USER_ENABLED" if new_state else "USER_DISABLED",
+                    f"username={target.username}",
+                )
                 save_now()
                 st.rerun()
 
 
 def _render_local_screen_preview() -> None:
-    st.info("Screen sharing starts only after you select a screen/window and approve the browser prompt. Nothing is captured or transmitted to the server by this preview.")
-    monitor_html = r'''<!doctype html><html><head><style>
+    st.info(
+        "Screen sharing starts only after you select a screen/window and approve the browser prompt. Nothing is captured or transmitted to the server by this preview."
+    )
+    monitor_html = r"""<!doctype html><html><head><style>
       body{font-family:Arial,sans-serif;margin:0;color:var(--text-color,#222)}
       button{padding:10px 16px;border:0;border-radius:8px;background:#1769aa;color:white;font-weight:600;cursor:pointer;margin:4px}
       button.stop{background:#a83232} video{width:100%;max-height:520px;background:#111;border-radius:10px;margin-top:10px}
@@ -386,25 +454,32 @@ def _render_local_screen_preview() -> None:
       function finish(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;start.disabled=false;stop.disabled=true;status.textContent='Screen sharing stopped.';}
       start.addEventListener('click',async()=>{try{if(!navigator.mediaDevices?.getDisplayMedia)throw new Error('Screen capture is not supported. Use Chrome or Edge over HTTPS or localhost.');stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false});video.srcObject=stream;start.disabled=true;stop.disabled=false;status.textContent='Screen preview active in this browser only.';stream.getVideoTracks()[0].addEventListener('ended',finish);}catch(e){status.textContent='Could not start: '+e.message;}});
       stop.addEventListener('click',finish);window.addEventListener('beforeunload',finish);
-      </script></body></html>'''
+      </script></body></html>"""
     components.html(monitor_html, height=610, scrolling=False)
-
 
 
 def _screen_share_reason() -> str:
     """Why screen sharing is being asked for. An org can override this (Streamlit Secrets:
-    SCREEN_MONITOR_REASON) instead of editing code, so the real reason is always visible here."""
+    SCREEN_MONITOR_REASON) instead of editing code, so the real reason is always visible here.
+    """
     sec = _read_secrets(["SCREEN_MONITOR_REASON"])
-    custom = str(sec.get("SCREEN_MONITOR_REASON") or os.environ.get("SCREEN_MONITOR_REASON") or "").strip()
+    custom = str(
+        sec.get("SCREEN_MONITOR_REASON")
+        or os.environ.get("SCREEN_MONITOR_REASON")
+        or ""
+    ).strip()
     return custom or (
         "To help with remote troubleshooting and to check in on shared/public terminals "
         "(for example, a help-desk or front-counter PC) without someone having to be there in person."
     )
 
 
-def _render_share_invite(kind: str, link_label: str, link_url: str, steps: list[str]) -> None:
+def _render_share_invite(
+    kind: str, link_label: str, link_url: str, steps: list[str]
+) -> None:
     """One consistent 'Share your screen?' onboarding card: link, reason, and a clear opt-out.
-    Used for both the computer and the phone monitor tabs so the invitation always looks the same."""
+    Used for both the computer and the phone monitor tabs so the invitation always looks the same.
+    """
     with st.container(border=True):
         st.markdown(f"#### 🔗 Share your {kind} screen?")
         st.write(
@@ -431,15 +506,25 @@ def _render_share_invite(kind: str, link_label: str, link_url: str, steps: list[
 def render_screen_monitor(key_prefix: str = "tab", username: str = "User") -> None:
     """Admin/analyst view of OTHER computers whose users chose to share their screen."""
     st.header("🖥️ Screen Monitor")
-    st.caption("Computers that are sharing their screen with you • live snapshots every few seconds")
+    st.caption(
+        "Computers that are sharing their screen with you • live snapshots every few seconds"
+    )
     base_url, api_key = _mobile_monitor_config()
     if not base_url or not api_key:
-        st.warning("The monitor service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets (the same service the phone monitor uses).")
+        st.warning(
+            "The monitor service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets (the same service the phone monitor uses)."
+        )
     else:
         st.markdown("#### ⚡ Auto Screen Monitoring")
-        st.caption(f"Signed-in platform account: **{username}**. The saved pairing key will be supplied securely; you will not need to type it again.")
+        st.caption(
+            f"Signed-in platform account: **{username}**. The saved pairing key will be supplied securely; you will not need to type it again."
+        )
         launch_state_key = f"{key_prefix}_pc_auto_launch_url"
-        if st.button("⚡ Auto Screen Monitoring", key=f"{key_prefix}_pc_auto_start", type="primary"):
+        if st.button(
+            "⚡ Auto Screen Monitoring",
+            key=f"{key_prefix}_pc_auto_start",
+            type="primary",
+        ):
             try:
                 launch = requests.post(
                     f"{base_url}/v1/pc/launch",
@@ -454,12 +539,20 @@ def render_screen_monitor(key_prefix: str = "tab", username: str = "User") -> No
                 if launch_url.startswith("/"):
                     launch_url = base_url + launch_url
                 st.session_state[launch_state_key] = launch_url
-                st.success("Your secure sharing link is ready. Open it on the computer you want to share.")
+                st.success(
+                    "Your secure sharing link is ready. Open it on the computer you want to share."
+                )
             except Exception as exc:
                 st.error(f"Could not prepare automatic screen monitoring: {exc}")
         if st.session_state.get(launch_state_key):
-            st.link_button("🖥️ Open Auto Screen Monitoring", st.session_state[launch_state_key], use_container_width=True)
-            st.caption("The link expires after 5 minutes and can be used once. On the PC, click Start and approve the browser's screen-sharing prompt.")
+            st.link_button(
+                "🖥️ Open Auto Screen Monitoring",
+                st.session_state[launch_state_key],
+                use_container_width=True,
+            )
+            st.caption(
+                "The link expires after 5 minutes and can be used once. On the PC, click Start and approve the browser's screen-sharing prompt."
+            )
         st.divider()
         _pc_monitor_live(base_url, api_key, key_prefix)
     with st.expander("Preview THIS computer's screen (stays in your own browser)"):
@@ -473,13 +566,19 @@ def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
     try:
         response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
         if response.status_code == 401:
-            st.error("The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one on the service.")
+            st.error(
+                "The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one on the service."
+            )
             return
         response.raise_for_status()
-        computers = [d for d in response.json().get("devices", []) if d.get("kind") == "pc"]
+        computers = [
+            d for d in response.json().get("devices", []) if d.get("kind") == "pc"
+        ]
     except Exception as exc:
         st.error(f"Could not connect to the monitor service: {exc}")
-        st.caption("A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically.")
+        st.caption(
+            "A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically."
+        )
         return
 
     if not computers:
@@ -498,49 +597,90 @@ def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
         return
 
     import pandas as pd
+
     st.dataframe(
-        pd.DataFrame([{
-            "Computer": d.get("device_name") or d.get("device_id", "Unknown"),
-            "Logged-in account": d.get("login_user") or "—",
-            "System": d.get("manufacturer", "—"),
-            "Browser": d.get("model", "—"),
-            "Screen": d.get("screen_resolution", "—"),
-            "Status": "Online" if d.get("online") else "Offline",
-            "Last seen (UTC)": d.get("last_seen", "—"),
-        } for d in computers]),
-        use_container_width=True, hide_index=True,
+        pd.DataFrame(
+            [
+                {
+                    "Computer": d.get("device_name") or d.get("device_id", "Unknown"),
+                    "Logged-in account": d.get("login_user") or "—",
+                    "System": d.get("manufacturer", "—"),
+                    "Browser": d.get("model", "—"),
+                    "Screen": d.get("screen_resolution", "—"),
+                    "Status": "Online" if d.get("online") else "Offline",
+                    "Last seen (UTC)": d.get("last_seen", "—"),
+                }
+                for d in computers
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
-    choices = {f"{d.get('device_name') or d.get('device_id')}": d.get("device_id") for d in computers}
-    label = st.selectbox("Select a computer", list(choices.keys()), key=f"{key_prefix}_pc_select")
+    choices = {
+        f"{d.get('device_name') or d.get('device_id')}": d.get("device_id")
+        for d in computers
+    }
+    label = st.selectbox(
+        "Select a computer", list(choices.keys()), key=f"{key_prefix}_pc_select"
+    )
     selected_id = choices[label]
     try:
-        frame = requests.get(f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10)
+        frame = requests.get(
+            f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10
+        )
         if frame.status_code == 200:
-            st.image(frame.content, caption=f"{label} • latest picture (updates every few seconds)", use_container_width=True)
+            st.image(
+                frame.content,
+                caption=f"{label} • latest picture (updates every few seconds)",
+                use_container_width=True,
+            )
         elif frame.status_code == 404:
-            st.info("Connected, but no picture yet. The person must press Start sharing and choose a screen.")
+            st.info(
+                "Connected, but no picture yet. The person must press Start sharing and choose a screen."
+            )
         else:
             st.warning(f"Picture unavailable (HTTP {frame.status_code}).")
     except Exception as exc:
         st.warning(f"Could not load the picture: {exc}")
-    if st.button("🗑️ Disconnect and delete this computer's picture", key=f"{key_prefix}_pc_forget"):
+    if st.button(
+        "🗑️ Disconnect and delete this computer's picture",
+        key=f"{key_prefix}_pc_forget",
+    ):
         try:
-            requests.delete(f"{base_url}/v1/devices/{selected_id}", headers=headers, timeout=8)
+            requests.delete(
+                f"{base_url}/v1/devices/{selected_id}", headers=headers, timeout=8
+            )
         except Exception:
             pass
         st.rerun(scope="fragment")
-    st.caption("View only: no remote control, no sound, no camera, no microphone, no keyboard or file access.")
+    st.caption(
+        "View only: no remote control, no sound, no camera, no microphone, no keyboard or file access."
+    )
 
 
 def _mobile_monitor_config():
     """Return the separately hosted Android monitor service settings."""
     sec = _read_secrets(["MOBILE_MONITOR_API_URL", "MOBILE_MONITOR_API_KEY"])
-    base_url = str(sec.get("MOBILE_MONITOR_API_URL") or os.environ.get("MOBILE_MONITOR_API_URL") or "").strip().rstrip("/")
-    api_key = str(sec.get("MOBILE_MONITOR_API_KEY") or os.environ.get("MOBILE_MONITOR_API_KEY") or "").strip()
+    base_url = (
+        str(
+            sec.get("MOBILE_MONITOR_API_URL")
+            or os.environ.get("MOBILE_MONITOR_API_URL")
+            or ""
+        )
+        .strip()
+        .rstrip("/")
+    )
+    api_key = str(
+        sec.get("MOBILE_MONITOR_API_KEY")
+        or os.environ.get("MOBILE_MONITOR_API_KEY")
+        or ""
+    ).strip()
     return base_url, api_key
 
 
-def render_mobile_phone_monitor(db_path: str, username: str, key_prefix: str = "tab") -> None:
+def render_mobile_phone_monitor(
+    db_path: str, username: str, key_prefix: str = "tab"
+) -> None:
     """Admin/analyst dashboard for explicitly consented Android companion devices.
 
     key_prefix keeps widget ids unique because this view can be drawn twice (sidebar panel + tab).
@@ -554,10 +694,17 @@ def render_mobile_phone_monitor(db_path: str, username: str, key_prefix: str = "
     )
     base_url, api_key = _mobile_monitor_config()
     if not base_url or not api_key:
-        st.warning("Mobile monitoring service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets.")
+        st.warning(
+            "Mobile monitoring service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets."
+        )
         with st.expander("Configuration example"):
-            st.code('MOBILE_MONITOR_API_URL = "https://your-monitor-service.example.com"\nMOBILE_MONITOR_API_KEY = "use-a-long-random-secret"', language="toml")
-        st.markdown("The companion API is included in `mobile_monitor_service/`. Deploy it separately (for example, on a private HTTPS Render/Railway service), then add its URL and the same secret here.")
+            st.code(
+                'MOBILE_MONITOR_API_URL = "https://your-monitor-service.example.com"\nMOBILE_MONITOR_API_KEY = "use-a-long-random-secret"',
+                language="toml",
+            )
+        st.markdown(
+            "The companion API is included in `mobile_monitor_service/`. Deploy it separately (for example, on a private HTTPS Render/Railway service), then add its URL and the same secret here."
+        )
         return
     _mobile_monitor_live(base_url, api_key, key_prefix)
 
@@ -565,18 +712,27 @@ def render_mobile_phone_monitor(db_path: str, username: str, key_prefix: str = "
 @st.fragment(run_every=4)
 def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
     """Live part of the dashboard. It re-runs by itself every 4 s WITHOUT re-running the whole page
-    (a whole-page st_autorefresh made buttons elsewhere lose clicks and slowed every page run)."""
+    (a whole-page st_autorefresh made buttons elsewhere lose clicks and slowed every page run).
+    """
     headers = {"X-Monitor-Key": api_key}
     try:
         response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
         if response.status_code == 401:
-            st.error("The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one set on the monitor service.")
+            st.error(
+                "The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one set on the monitor service."
+            )
             return
         response.raise_for_status()
-        devices = [d for d in response.json().get("devices", []) if d.get("kind", "android") != "pc"]
+        devices = [
+            d
+            for d in response.json().get("devices", [])
+            if d.get("kind", "android") != "pc"
+        ]
     except Exception as exc:
         st.error(f"Could not connect to the mobile monitoring service: {exc}")
-        st.caption("A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically.")
+        st.caption(
+            "A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically."
+        )
         return
 
     if not devices:
@@ -606,29 +762,48 @@ def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
         return
 
     import pandas as pd
+
     rows = []
     for device in devices:
-        rows.append({
-            "Device": device.get("device_name") or device.get("device_id", "Unknown"),
-            "Model": device.get("model", "—"),
-            "Android": device.get("android_version", "—"),
-            "Battery": f"{device.get('battery_percent')}%" if device.get("battery_percent") is not None else "—",
-            "Network": device.get("network_type", "—"),
-            "Screen": device.get("screen_resolution", "—"),
-            "Status": "Online" if device.get("online") else "Offline",
-            "Last seen (UTC)": device.get("last_seen", "—"),
-        })
+        rows.append(
+            {
+                "Device": device.get("device_name")
+                or device.get("device_id", "Unknown"),
+                "Model": device.get("model", "—"),
+                "Android": device.get("android_version", "—"),
+                "Battery": (
+                    f"{device.get('battery_percent')}%"
+                    if device.get("battery_percent") is not None
+                    else "—"
+                ),
+                "Network": device.get("network_type", "—"),
+                "Screen": device.get("screen_resolution", "—"),
+                "Status": "Online" if device.get("online") else "Offline",
+                "Last seen (UTC)": device.get("last_seen", "—"),
+            }
+        )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     choices = {
-        f"{d.get('device_name') or d.get('device_id')} ({d.get('model', 'Android')})": d.get("device_id")
+        f"{d.get('device_name') or d.get('device_id')} ({d.get('model', 'Android')})": d.get(
+            "device_id"
+        )
         for d in devices
     }
-    selected_label = st.selectbox("Select Android phone", list(choices.keys()), key=f"{key_prefix}_mm_device")
+    selected_label = st.selectbox(
+        "Select Android phone", list(choices.keys()), key=f"{key_prefix}_mm_device"
+    )
     selected_id = choices[selected_label]
     selected = next((d for d in devices if d.get("device_id") == selected_id), {})
     left, right = st.columns(2)
     with left:
-        st.metric("Battery", f"{selected.get('battery_percent')}%" if selected.get("battery_percent") is not None else "Unknown")
+        st.metric(
+            "Battery",
+            (
+                f"{selected.get('battery_percent')}%"
+                if selected.get("battery_percent") is not None
+                else "Unknown"
+            ),
+        )
         st.write("**Connection:**", "Online" if selected.get("online") else "Offline")
         st.write("**Manufacturer:**", selected.get("manufacturer", "—"))
         st.write("**Android version:**", selected.get("android_version", "—"))
@@ -637,36 +812,55 @@ def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
         st.write("**Network:**", selected.get("network_type", "—"))
         st.write("**Device ID:**", selected_id)
         st.write("**Last seen (UTC):**", selected.get("last_seen", "—"))
-        st.caption("Screen images are short-lived snapshots held by the monitor service in memory; they are not archived by this dashboard.")
+        st.caption(
+            "Screen images are short-lived snapshots held by the monitor service in memory; they are not archived by this dashboard."
+        )
     try:
-        frame_response = requests.get(f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10)
+        frame_response = requests.get(
+            f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10
+        )
         if frame_response.status_code == 200:
             st.subheader("📺 Phone Screen Preview")
-            st.image(frame_response.content, caption="Latest screen frame • updates every few seconds", use_container_width=True)
+            st.image(
+                frame_response.content,
+                caption="Latest screen frame • updates every few seconds",
+                use_container_width=True,
+            )
         elif frame_response.status_code == 404:
-            st.info("No screen frame received yet. On the phone, press Start Screen Sharing and approve Android's permission prompt.")
+            st.info(
+                "No screen frame received yet. On the phone, press Start Screen Sharing and approve Android's permission prompt."
+            )
         else:
-            st.warning(f"Screen preview unavailable (HTTP {frame_response.status_code}).")
+            st.warning(
+                f"Screen preview unavailable (HTTP {frame_response.status_code})."
+            )
     except Exception as exc:
         st.warning(f"Could not load the screen preview: {exc}")
-    st.caption("For privacy, this dashboard does not provide remote control, microphone access, camera access, or hidden monitoring.")
-
+    st.caption(
+        "For privacy, this dashboard does not provide remote control, microphone access, camera access, or hidden monitoring."
+    )
 
 
 @st.fragment(run_every=5)
 def render_pc_system_monitor(key_prefix: str = "pcmon") -> None:
     # Dashboard for metrics voluntarily sent by installed PC monitoring agents.
     st.header("📈 PC System Monitoring")
-    st.caption("Hardware • Network • System activity from computers whose owners started the monitoring agent")
+    st.caption(
+        "Hardware • Network • System activity from computers whose owners started the monitoring agent"
+    )
     base_url, api_key = _mobile_monitor_config()
     if not base_url or not api_key:
-        st.warning("Configure MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit secrets before connecting PCs.")
+        st.warning(
+            "Configure MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit secrets before connecting PCs."
+        )
         return
     headers = {"X-Monitor-Key": api_key}
     try:
         response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
         response.raise_for_status()
-        devices = [d for d in response.json().get("devices", []) if d.get("kind") == "pc"]
+        devices = [
+            d for d in response.json().get("devices", []) if d.get("kind") == "pc"
+        ]
     except Exception as exc:
         st.error(f"Could not connect to the monitoring service: {exc}")
         return
@@ -680,18 +874,37 @@ def render_pc_system_monitor(key_prefix: str = "pcmon") -> None:
                 "4. Start it with the service URL and the same pairing key used by this dashboard.\n"
                 "5. Keep the agent running while monitoring is required. Press Ctrl+C to stop."
             )
-            st.code('''py -m pip install psutil requests
-py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-KEY" --name "Office PC"''', language="powershell")
-        st.caption("The agent sends telemetry only while running. It does not capture screens, audio, keystrokes or allow remote control.")
+            st.code(
+                '''py -m pip install psutil requests
+py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-KEY" --name "Office PC"''',
+                language="powershell",
+            )
+        st.caption(
+            "The agent sends telemetry only while running. It does not capture screens, audio, keystrokes or allow remote control."
+        )
         return
 
-    choices = {f"{d.get('device_name', 'PC')} — {'Online' if d.get('online') else 'Offline'}": d["device_id"] for d in devices}
-    selected_label = st.selectbox("Select computer", list(choices), key=f"{key_prefix}_device")
+    choices = {
+        f"{d.get('device_name', 'PC')} — {'Online' if d.get('online') else 'Offline'}": d[
+            "device_id"
+        ]
+        for d in devices
+    }
+    selected_label = st.selectbox(
+        "Select computer", list(choices), key=f"{key_prefix}_device"
+    )
     selected_id = choices[selected_label]
     try:
-        result = requests.get(f"{base_url}/v1/pc/metrics", params={"device_id": selected_id}, headers=headers, timeout=8)
+        result = requests.get(
+            f"{base_url}/v1/pc/metrics",
+            params={"device_id": selected_id},
+            headers=headers,
+            timeout=8,
+        )
         if result.status_code == 404:
-            st.warning("This computer is registered but has not sent telemetry yet. Start or restart its PC monitoring agent.")
+            st.warning(
+                "This computer is registered but has not sent telemetry yet. Start or restart its PC monitoring agent."
+            )
             return
         result.raise_for_status()
         data = result.json().get("metrics", {})
@@ -699,33 +912,66 @@ py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-
         st.error(f"Could not load PC metrics: {exc}")
         return
 
-    st.caption(f"Computer: {data.get('hostname', '—')} · {data.get('platform', '—')} · Last update: {data.get('captured_at', '—')}")
+    st.caption(
+        f"Computer: {data.get('hostname', '—')} · {data.get('platform', '—')} · Last update: {data.get('captured_at', '—')}"
+    )
     st.subheader("1. Hardware Monitoring")
     c = st.columns(4)
     c[0].metric("CPU Usage", f"{data.get('cpu_percent', 0):.1f}%")
-    c[1].metric("RAM Usage", f"{data.get('ram_percent', 0):.1f}%", f"{data.get('ram_used_mb', 0)} / {data.get('ram_total_mb', 0)} MB")
-    c[2].metric("Disk Usage", f"{data.get('disk_percent', 0):.1f}%", f"{data.get('disk_used_gb', 0)} / {data.get('disk_total_gb', 0)} GB")
+    c[1].metric(
+        "RAM Usage",
+        f"{data.get('ram_percent', 0):.1f}%",
+        f"{data.get('ram_used_mb', 0)} / {data.get('ram_total_mb', 0)} MB",
+    )
+    c[2].metric(
+        "Disk Usage",
+        f"{data.get('disk_percent', 0):.1f}%",
+        f"{data.get('disk_used_gb', 0)} / {data.get('disk_total_gb', 0)} GB",
+    )
     temp = data.get("cpu_temperature_c")
-    c[3].metric("CPU Temperature", f"{temp:.1f} °C" if isinstance(temp, (int, float)) else "Unavailable")
+    c[3].metric(
+        "CPU Temperature",
+        f"{temp:.1f} °C" if isinstance(temp, (int, float)) else "Unavailable",
+    )
     gpu = data.get("gpu")
     if gpu:
-        st.metric(f"GPU Usage · {gpu.get('name', 'GPU')}", f"{gpu.get('usage_percent', 0):.1f}%")
+        st.metric(
+            f"GPU Usage · {gpu.get('name', 'GPU')}",
+            f"{gpu.get('usage_percent', 0):.1f}%",
+        )
         if "memory_used_mb" in gpu:
             g1, g2 = st.columns(2)
-            g1.metric("GPU Memory", f"{gpu.get('memory_used_mb', 0):.0f} / {gpu.get('memory_total_mb', 0):.0f} MB")
+            g1.metric(
+                "GPU Memory",
+                f"{gpu.get('memory_used_mb', 0):.0f} / {gpu.get('memory_total_mb', 0):.0f} MB",
+            )
             g2.metric("GPU Temperature", f"{gpu.get('temperature_c', 0):.1f} °C")
     else:
-        st.caption("GPU telemetry is unavailable. Windows GPU usage uses GPU Engine counters when supported; NVIDIA systems can use nvidia-smi. CPU temperature depends on hardware/OS sensor support.")
+        st.caption(
+            "GPU telemetry is unavailable. Windows GPU usage uses GPU Engine counters when supported; NVIDIA systems can use nvidia-smi. CPU temperature depends on hardware/OS sensor support."
+        )
 
     st.subheader("2. Network Monitoring")
     n1, n2, n3, n4 = st.columns(4)
-    n1.metric("Connection", "Connected" if data.get("internet_connected") else "No active interface")
-    n2.metric("Download Speed", f"{data.get('download_bytes_per_sec', 0) / 1048576:.2f} MB/s")
-    n3.metric("Upload Speed", f"{data.get('upload_bytes_per_sec', 0) / 1048576:.2f} MB/s")
-    n4.metric("Total Traffic", f"↓ {data.get('download_total_mb', 0):.1f} / ↑ {data.get('upload_total_mb', 0):.1f} MB")
+    n1.metric(
+        "Connection",
+        "Connected" if data.get("internet_connected") else "No active interface",
+    )
+    n2.metric(
+        "Download Speed", f"{data.get('download_bytes_per_sec', 0) / 1048576:.2f} MB/s"
+    )
+    n3.metric(
+        "Upload Speed", f"{data.get('upload_bytes_per_sec', 0) / 1048576:.2f} MB/s"
+    )
+    n4.metric(
+        "Total Traffic",
+        f"↓ {data.get('download_total_mb', 0):.1f} / ↑ {data.get('upload_total_mb', 0):.1f} MB",
+    )
 
     st.subheader("3. System Activity Monitoring")
-    st.write(f"**Uptime:** {int(data.get('uptime_seconds', 0) // 3600)} hours · **CPU cores:** {data.get('cpu_count', '—')}")
+    st.write(
+        f"**Uptime:** {int(data.get('uptime_seconds', 0) // 3600)} hours · **CPU cores:** {data.get('cpu_count', '—')}"
+    )
     st.markdown("**Top running processes**")
     processes = data.get("processes", [])
     if processes:
@@ -737,8 +983,12 @@ py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-
     if errors:
         st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
     else:
-        st.info("No recent Windows error events were reported, or this operating system does not provide Windows Event Logs.")
-    st.caption("Metrics are latest snapshots held in the monitoring service's memory; historical charts are not enabled. Some temperature/GPU sensors are hardware-dependent.")
+        st.info(
+            "No recent Windows error events were reported, or this operating system does not provide Windows Event Logs."
+        )
+    st.caption(
+        "Metrics are latest snapshots held in the monitoring service's memory; historical charts are not enabled. Some temperature/GPU sensors are hardware-dependent."
+    )
 
 
 def check_session_timeout():
@@ -834,10 +1084,22 @@ def render_sidebar_controls(db_path, user_role):
         username = st.session_state.get("current_user", "User")
         render_sidebar_threads(db_path, username)
         if user_role in ("admin", "analyst"):
-            if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
-                st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
-            if st.button("📱 Mobile Phone Monitor", use_container_width=True, key="sidebar_mobile_monitor"):
-                st.session_state["show_mobile_monitor_panel"] = not st.session_state.get("show_mobile_monitor_panel", False)
+            if st.button(
+                "🖥️ Screen Monitor",
+                use_container_width=True,
+                key="sidebar_screen_monitor",
+            ):
+                st.session_state["show_screen_monitor_panel"] = (
+                    not st.session_state.get("show_screen_monitor_panel", False)
+                )
+            if st.button(
+                "📱 Mobile Phone Monitor",
+                use_container_width=True,
+                key="sidebar_mobile_monitor",
+            ):
+                st.session_state["show_mobile_monitor_panel"] = (
+                    not st.session_state.get("show_mobile_monitor_panel", False)
+                )
 
         st.markdown("---")
         with st.expander("⚙️ Session & System Admin", expanded=False):
@@ -868,7 +1130,9 @@ def render_sidebar_controls(db_path, user_role):
 
                 st.subheader("☁️ Database")
                 if pgdb.is_postgres():
-                    st.success("Connected to the Supabase cloud database. Every change is saved immediately and shared by all users.")
+                    st.success(
+                        "Connected to the Supabase cloud database. Every change is saved immediately and shared by all users."
+                    )
                 else:
                     st.warning(
                         "Local SQLite file (database.db) - not shared and not backed up. "
@@ -876,11 +1140,18 @@ def render_sidebar_controls(db_path, user_role):
                     )
 
                 st.subheader("💾 Export / Backup")
-                if st.button("📦 Prepare " + ("export (CSV ZIP)" if pgdb.is_postgres() else "backup")):
+                if st.button(
+                    "📦 Prepare "
+                    + ("export (CSV ZIP)" if pgdb.is_postgres() else "backup")
+                ):
                     st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
                     log_event(db_path, username, "DB_BACKUP", "")
                 if st.session_state.get("backup_bytes"):
-                    _ext, _mime = (("zip", "application/zip") if pgdb.is_postgres() else ("db", "application/octet-stream"))
+                    _ext, _mime = (
+                        ("zip", "application/zip")
+                        if pgdb.is_postgres()
+                        else ("db", "application/octet-stream")
+                    )
                     st.download_button(
                         "⬇️ Download " + ("export" if pgdb.is_postgres() else "backup"),
                         data=st.session_state["backup_bytes"],
@@ -888,9 +1159,15 @@ def render_sidebar_controls(db_path, user_role):
                         mime=_mime,
                     )
 
-                up_file = None if pgdb.is_postgres() else st.file_uploader("Upload Backup", type=["zip", "db"])
+                up_file = (
+                    None
+                    if pgdb.is_postgres()
+                    else st.file_uploader("Upload Backup", type=["zip", "db"])
+                )
                 if pgdb.is_postgres():
-                    st.caption("Restore for the cloud database is done in Supabase (Database > Backups), not from the app.")
+                    st.caption(
+                        "Restore for the cloud database is done in Supabase (Database > Backups), not from the app."
+                    )
                 if up_file is not None and st.button("🛡️ Validate & Restore"):
                     success, msg = validate_and_restore_sqlite(up_file, db_path)
                     if success:
@@ -939,10 +1216,22 @@ def render_web_sources_tab(db_path, user_role, username):
                 default=list(labels.keys()),
                 key="math_links_pick",
             )
-            if st.button("➕ Add selected Maths websites", disabled=busy or not chosen, key="math_links_add"):
-                start_job("web", add_many_sources, db_path, [labels[c] for c in chosen], username)
+            if st.button(
+                "➕ Add selected Maths websites",
+                disabled=busy or not chosen,
+                key="math_links_add",
+            ):
+                start_job(
+                    "web",
+                    add_many_sources,
+                    db_path,
+                    [labels[c] for c in chosen],
+                    username,
+                )
                 st.rerun()
-            st.caption("Fetching many sites can take a minute or two. The result appears below.")
+            st.caption(
+                "Fetching many sites can take a minute or two. The result appears below."
+            )
         poll_job("web", "Fetching website(s)")
         show_result("web")
     else:
@@ -1166,9 +1455,11 @@ def main():
         init_db(db_path)
         _seed_default_users(db_path)
         init_chat_tables(db_path)
-    except (pgdb.Error, RuntimeError) as exc:
+    except (*pgdb.Error, RuntimeError) as exc:
         st.error(f"Cannot reach the database: {exc}")
-        st.info("Check SUPABASE_DB_URL in .env (Supabase > Project Settings > Database > Connection string) and your internet connection.")
+        st.info(
+            "Check SUPABASE_DB_URL in .env (Supabase > Project Settings > Database > Connection string) and your internet connection."
+        )
         return
     if pgdb.is_postgres():
         st.sidebar.caption("☁️ Supabase cloud database")
@@ -1189,24 +1480,37 @@ def main():
     # A fragment only re-runs itself and asks for a full re-run only when something really needs it.
     if not st.session_state.get("is_streaming", False):
         _busy = any(
-            k.startswith(("job:", "scanjob:")) and v is not None for k, v in list(st.session_state.items())
+            k.startswith(("job:", "scanjob:")) and v is not None
+            for k, v in list(st.session_state.items())
         )
 
         @st.fragment(run_every=1 if _busy else 10)
         def _ticker():
-            if client_ts := st.query_params.get("user_active_ts"):     # activity reported by the browser
+            if client_ts := st.query_params.get(
+                "user_active_ts"
+            ):  # activity reported by the browser
                 if client_ts != st.session_state.get("client_last_active_ts", 0):
                     st.session_state["client_last_active_ts"] = client_ts
                     st.session_state["last_active"] = time.time()
-            expired = time.time() - st.session_state.get("last_active", time.time()) > TIMEOUT_SECONDS
-            finished = tuple(sorted(
-                k for k, v in list(st.session_state.items())
-                if k.startswith(("job:", "scanjob:")) and isinstance(v, dict) and v["future"].done()
-            ))
-            new_finish = bool(finished) and finished != st.session_state.get("_ticker_seen_fin")
+            expired = (
+                time.time() - st.session_state.get("last_active", time.time())
+                > TIMEOUT_SECONDS
+            )
+            finished = tuple(
+                sorted(
+                    k
+                    for k, v in list(st.session_state.items())
+                    if k.startswith(("job:", "scanjob:"))
+                    and isinstance(v, dict)
+                    and v["future"].done()
+                )
+            )
+            new_finish = bool(finished) and finished != st.session_state.get(
+                "_ticker_seen_fin"
+            )
             st.session_state["_ticker_seen_fin"] = finished
             if expired or new_finish:
-                st.rerun()   # full re-run: log the user out / show the finished job's result
+                st.rerun()  # full re-run: log the user out / show the finished job's result
 
         _ticker()
     client_activity_and_shortcuts()
@@ -1227,10 +1531,16 @@ def main():
     llm_cfg = llm.load_config(_read_secrets(secret_keys))
 
     ui_theme.render_hero(html.escape(str(username)), str(user_role))
-    if st.session_state.get("show_screen_monitor_panel") and user_role in ("admin", "analyst"):
+    if st.session_state.get("show_screen_monitor_panel") and user_role in (
+        "admin",
+        "analyst",
+    ):
         render_screen_monitor(key_prefix="panel", username=username)
         st.divider()
-    if st.session_state.get("show_mobile_monitor_panel") and user_role in ("admin", "analyst"):
+    if st.session_state.get("show_mobile_monitor_panel") and user_role in (
+        "admin",
+        "analyst",
+    ):
         render_mobile_phone_monitor(db_path, username, key_prefix="panel")
         st.divider()
 
@@ -1257,7 +1567,9 @@ def main():
     with tabs["chat"]:
         render_ai_chat_interface(db_path, llm_cfg, user_role, username)
     with tabs["scan"]:
-        render_scan_tab(db_path, user_role, username, llm_cfg, _vision_model, on_change=save_now)
+        render_scan_tab(
+            db_path, user_role, username, llm_cfg, _vision_model, on_change=save_now
+        )
     with tabs["holo"]:
         render_holomotion_tab(db_path, llm_cfg, _vision_model, on_change=save_now)
 

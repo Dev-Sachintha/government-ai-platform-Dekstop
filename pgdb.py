@@ -7,6 +7,7 @@ The rest of the app keeps using the small sqlite3-style API it always used
 (connect / execute / cursor / fetch* / commit / close / lastrowid, `?` placeholders);
 this module translates those calls to PostgreSQL. No Streamlit calls here.
 """
+
 from __future__ import annotations
 
 import decimal
@@ -20,9 +21,12 @@ try:  # PostgreSQL driver is optional in local SQLite mode
 except Exception:  # pragma: no cover
     psycopg = None
 
+
 # --------------------------------------------------------------------------- config
 def database_url() -> str:
-    return (os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL") or "").strip()
+    return (
+        os.environ.get("SUPABASE_DB_URL") or os.environ.get("DATABASE_URL") or ""
+    ).strip()
 
 
 def is_postgres() -> bool:
@@ -30,15 +34,26 @@ def is_postgres() -> bool:
 
 
 # Exception types usable in `except pgdb.Error:` in both modes.
-Error = (sqlite3.Error, psycopg.Error) if psycopg else sqlite3.Error
-IntegrityError = (sqlite3.IntegrityError, psycopg.IntegrityError) if psycopg else sqlite3.IntegrityError
+Error = (sqlite3.Error, psycopg.Error) if psycopg else (sqlite3.Error,)
+IntegrityError = (
+    (sqlite3.IntegrityError, psycopg.IntegrityError)
+    if psycopg
+    else (sqlite3.IntegrityError,)
+)
 # Assign this to conn.row_factory (ignored in PostgreSQL mode: rows always support r[0] and r["col"]).
 Row = sqlite3.Row
 
 # Tables whose primary key is an identity column called `id` (INSERT ... RETURNING id -> lastrowid).
 IDENTITY_TABLES = {
-    "government_services", "audit_logs", "app_users", "web_sources", "web_pages",
-    "library_files", "library_items", "scan_items", "chat_messages",
+    "government_services",
+    "audit_logs",
+    "app_users",
+    "web_sources",
+    "web_pages",
+    "library_files",
+    "library_items",
+    "scan_items",
+    "chat_messages",
 }
 
 # CURRENT_TIMESTAMP in the original code wrote 'YYYY-MM-DD HH:MM:SS' text; keep that format.
@@ -47,17 +62,26 @@ NOW_TEXT = "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')"
 
 # --------------------------------------------------------------------------- SQL translation
 _STRING = re.compile(r"('(?:[^']|'')*')")
-_DDL = re.compile(r"^\s*(CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)|ALTER\s+TABLE|DROP\s+TABLE)\b", re.I)
+_DDL = re.compile(
+    r"^\s*(CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)|ALTER\s+TABLE|DROP\s+TABLE)\b", re.I
+)
 _PRAGMA = re.compile(r"^\s*PRAGMA\b", re.I)
 _INSERT_TABLE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.I)
 _OR_CLAUSE = re.compile(r"\bINSERT\s+OR\s+(IGNORE|REPLACE)\b", re.I)
 
 
 def _code_segment(seg: str, has_params: bool) -> str:
-    seg = re.sub(r"([\w.]+)\s*=\s*\?\s+COLLATE\s+NOCASE", r"lower(\1) = lower(?)", seg, flags=re.I)
+    seg = re.sub(
+        r"([\w.]+)\s*=\s*\?\s+COLLATE\s+NOCASE",
+        r"lower(\1) = lower(?)",
+        seg,
+        flags=re.I,
+    )
     seg = re.sub(r"([\w.]+)\s+COLLATE\s+NOCASE", r"lower(\1)", seg, flags=re.I)
     seg = re.sub(r"\bCURRENT_TIMESTAMP\b", NOW_TEXT, seg, flags=re.I)
-    seg = re.sub(r"\bLIKE\s+\?", "ILIKE ? ESCAPE ''", seg, flags=re.I)   # SQLite LIKE is case-insensitive
+    seg = re.sub(
+        r"\bLIKE\s+\?", "ILIKE ? ESCAPE ''", seg, flags=re.I
+    )  # SQLite LIKE is case-insensitive
     seg = re.sub(r"\bLIKE\b", "ILIKE", seg, flags=re.I)
     if has_params:
         seg = seg.replace("%", "%%")
@@ -71,18 +95,25 @@ def translate(sql: str, has_params: bool = True, returning_id: bool = True):
     if _DDL.match(sql) or _PRAGMA.match(sql):
         return None, False
     if _OR_CLAUSE.search(sql):
-        raise NotImplementedError("INSERT OR IGNORE/REPLACE must be written as ON CONFLICT for PostgreSQL")
+        raise NotImplementedError(
+            "INSERT OR IGNORE/REPLACE must be written as ON CONFLICT for PostgreSQL"
+        )
     parts = _STRING.split(sql)
     out = []
     for i, part in enumerate(parts):
-        if i % 2:   # string literal
+        if i % 2:  # string literal
             out.append(part.replace("%", "%%") if has_params else part)
         else:
             out.append(_code_segment(part, has_params))
     pg = "".join(out).strip().rstrip(";").rstrip()
     appended = False
     m = _INSERT_TABLE.match(pg)
-    if returning_id and m and m.group(1).lower() in IDENTITY_TABLES and not re.search(r"\bRETURNING\b", pg, re.I):
+    if (
+        returning_id
+        and m
+        and m.group(1).lower() in IDENTITY_TABLES
+        and not re.search(r"\bRETURNING\b", pg, re.I)
+    ):
         pg += " RETURNING id"
         appended = True
     return pg, appended
@@ -143,7 +174,9 @@ def _row_factory(cursor):
 
 def _clean_param(v):
     if isinstance(v, str):
-        return v.replace("\x00", "")        # PostgreSQL text cannot hold NUL (PDF extraction can produce it)
+        return v.replace(
+            "\x00", ""
+        )  # PostgreSQL text cannot hold NUL (PDF extraction can produce it)
     if isinstance(v, (bytearray, memoryview)):
         return bytes(v)
     if type(v).__module__ == "numpy" and hasattr(v, "item"):
@@ -170,12 +203,53 @@ def _normalized_url() -> str:
     return url
 
 
+def _explain(exc: Exception) -> str:
+    msg = str(exc).strip() or exc.__class__.__name__
+    low = msg.lower()
+    hint = ""
+    if any(
+        k in low
+        for k in (
+            "network is unreachable",
+            "could not translate host",
+            "getaddrinfo",
+            "no route to host",
+            "name or service not known",
+        )
+    ):
+        hint = (
+            "Your network probably has no IPv6, which Supabase's direct connection needs. In Supabase press the "
+            "'Connect' button, choose 'Session pooler', and use that connection string in SUPABASE_DB_URL."
+        )
+    elif "password authentication failed" in low:
+        hint = "The database password in SUPABASE_DB_URL is wrong (reset it in Supabase > Project Settings > Database)."
+    elif "tenant or user not found" in low:
+        hint = "With the pooler the user must be postgres.<PROJECT_REF>, exactly as shown in Supabase's Session pooler string."
+    elif "timeout" in low or "timed out" in low:
+        hint = "The server did not answer. Check your internet connection / firewall, or try the Session pooler string."
+    return f"Cannot connect to Supabase: {msg}" + (f"  ->  {hint}" if hint else "")
+
+
+def _check_connection() -> None:
+    """Connect once, directly, so the real error (DNS, IPv6, password...) is shown instead of a pool timeout."""
+    try:
+        with psycopg.connect(
+            _normalized_url(), connect_timeout=10, prepare_threshold=None
+        ) as conn:
+            conn.execute("SELECT 1")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(_explain(exc)) from None
+
+
 def _get_pool():
     global _pool
     if psycopg is None:
-        raise RuntimeError("SUPABASE_DB_URL is set but the 'psycopg' package is missing (pip install 'psycopg[binary]' psycopg_pool).")
+        raise RuntimeError(
+            "SUPABASE_DB_URL is set but the 'psycopg' package is missing (pip install 'psycopg[binary]' psycopg_pool)."
+        )
     with _pool_lock:
         if _pool is None:
+            _check_connection()
             from psycopg_pool import ConnectionPool
 
             _pool = ConnectionPool(
@@ -183,7 +257,10 @@ def _get_pool():
                 min_size=1,
                 max_size=int(os.environ.get("GOVAI_DB_POOL_MAX", "8")),
                 timeout=30,
-                kwargs={"prepare_threshold": None, "connect_timeout": 15},   # works with Supabase's pooler
+                kwargs={
+                    "prepare_threshold": None,
+                    "connect_timeout": 15,
+                },  # works with Supabase's pooler
                 check=ConnectionPool.check_connection,
                 open=True,
             )
@@ -203,7 +280,9 @@ def ensure_schema() -> None:
     global _schema_done
     if _schema_done or not is_postgres():
         return
-    if os.environ.get("GOVAI_SKIP_SCHEMA", "").strip() == "1":   # restricted login role: schema applied by an admin
+    if (
+        os.environ.get("GOVAI_SKIP_SCHEMA", "").strip() == "1"
+    ):  # restricted login role: schema applied by an admin
         _schema_done = True
         return
     with _pool_lock:
@@ -220,7 +299,9 @@ def ensure_schema() -> None:
             conn.execute("SELECT pg_advisory_xact_lock(727274)")
             conn.execute(ROLES_SQL)
     except Exception as exc:  # noqa: BLE001
-        print(f"[pgdb] could not create read-only SQL roles ({exc}); AI/workbench SQL stays disabled.")
+        print(
+            f"[pgdb] could not create read-only SQL roles ({exc}); AI/workbench SQL stays disabled."
+        )
     _schema_done = True
 
 
@@ -240,7 +321,7 @@ class PgCursor:
         try:
             return fn(*args)
         except psycopg.Error:
-            self._owner._conn.rollback()    # PostgreSQL aborts the whole transaction on error
+            self._owner._conn.rollback()  # PostgreSQL aborts the whole transaction on error
             raise
 
     def execute(self, sql, params=None):
@@ -290,7 +371,9 @@ class PgConnection:
         self._pool = _get_pool()
         self._conn = self._pool.getconn()
         self._closed = False
-        self.row_factory = None    # accepted for sqlite3 compatibility; rows are always PgRow
+        self.row_factory = (
+            None  # accepted for sqlite3 compatibility; rows are always PgRow
+        )
 
     def cursor(self):
         return PgCursor(self)
@@ -342,7 +425,13 @@ def connect(db_path: str = "database.db"):
 READ_ROLES = {"chat": "govai_chat_ro", "workbench": "govai_workbench_ro"}
 
 
-def read_df(db_path: str, sql: str, scope: str = "workbench", timeout_ms: int = 10000, max_rows: int = 5000):
+def read_df(
+    db_path: str,
+    sql: str,
+    scope: str = "workbench",
+    timeout_ms: int = 10000,
+    max_rows: int = 5000,
+):
     """Run an untrusted SELECT (AI-written or typed by an admin) and return a DataFrame.
 
     PostgreSQL: read-only transaction, statement timeout, row cap, and a database role
@@ -364,15 +453,19 @@ def read_df(db_path: str, sql: str, scope: str = "workbench", timeout_ms: int = 
             conn.execute("SET TRANSACTION READ ONLY")
             conn.execute(f"SET LOCAL ROLE {role}")
             conn.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
-            cur = conn.execute(sql)          # no params: '%' in LIKE patterns is literal
+            cur = conn.execute(sql)  # no params: '%' in LIKE patterns is literal
             cols = [d.name for d in (cur.description or [])]
             rows = cur.fetchmany(max_rows) if cols else []
-            return pd.DataFrame([[_convert_value(v) for v in r] for r in rows], columns=cols)
+            return pd.DataFrame(
+                [[_convert_value(v) for v in r] for r in rows], columns=cols
+            )
         finally:
             conn.rollback()
 
 
-def table_columns(db_path: str, hidden_tables=(), hidden_columns=()) -> list[tuple[str, str, str]]:
+def table_columns(
+    db_path: str, hidden_tables=(), hidden_columns=()
+) -> list[tuple[str, str, str]]:
     """[(table, column, type)] for tables the AI may see (PostgreSQL or SQLite)."""
     conn = connect(db_path)
     try:
@@ -384,11 +477,19 @@ def table_columns(db_path: str, hidden_tables=(), hidden_columns=()) -> list[tup
             ).fetchall()
             out = [(r[0], r[1], r[2]) for r in rows]
         else:
-            names = [r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            names = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            ]
             for t in names:
                 for c in conn.execute(f'PRAGMA table_info("{t}")').fetchall():
                     out.append((t, c[1], c[2]))
-        return [r for r in out if r[0] not in hidden_tables and (r[0], r[1]) not in hidden_columns]
+        return [
+            r
+            for r in out
+            if r[0] not in hidden_tables and (r[0], r[1]) not in hidden_columns
+        ]
     finally:
         conn.close()
